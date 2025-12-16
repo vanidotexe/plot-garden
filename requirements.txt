@@ -1,0 +1,9 @@
+pyqt6
+matplotlib
+pandas
+numpy
+scipy
+scikit-learn
+skcikit-survival
+markdown
+google-genai

@@ -10,6 +10,8 @@
 
 A lightweight desktop app for statistics and exploratory data analysis. Originally built in collaboration with doctors for clinical research workflows, and useful as a practical alternative to SPSS and GraphPad. Built with PyQt6 and the Python data stack.
 
+Free to use, modify, and improve upon.
+
 ## Existing functionality
 
 - Spreadsheet-like data table with headers, inline editing, clipboard, and shortcuts.

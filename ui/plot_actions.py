@@ -1,0 +1,715 @@
+import re
+import pandas as pd
+import matplotlib.pyplot as _plt
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QDialogButtonBox,
+    QComboBox, QInputDialog, QMessageBox, QWidget, QCheckBox, QFormLayout
+)
+from PyQt6.QtCore import Qt
+
+from services import plots
+
+
+class PlotActions:
+    def __init__(self, window):
+        self.w = window  # MainWindow reference
+
+    # Utility
+    def _is_float(self, value):
+        try:
+            float(value)
+            return True
+        except ValueError:
+            return False
+
+    def choose_columns_and_rows(self, column_labels, row_labels, dialog_title="Select Columns and Rows"):
+        dlg = QDialog(self.w)
+        dlg.setWindowTitle(dialog_title)
+        layout = QVBoxLayout(dlg)
+        scroll_layout = QHBoxLayout()
+
+        def make_scrollable_checkbox_list(labels, title):
+            group = QVBoxLayout()
+            group.setAlignment(Qt.AlignmentFlag.AlignTop)
+            group.addWidget(QLabel(f"<b>{title}</b>"))
+            checks = []
+            for label in labels:
+                cb = QCheckBox(label)
+                group.addWidget(cb)
+                checks.append(cb)
+            container = QWidget()
+            container.setLayout(group)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(container)
+            scroll.setMinimumHeight(200)
+            scroll.setMaximumHeight(300)
+            return scroll, checks
+
+        col_scroll, col_checks = make_scrollable_checkbox_list(column_labels, "Columns")
+        row_scroll, row_checks = make_scrollable_checkbox_list(row_labels, "Rows")
+        scroll_layout.addWidget(col_scroll)
+        scroll_layout.addWidget(row_scroll)
+        layout.addLayout(scroll_layout)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        dlg.setMinimumSize(600, 400)
+        selected_cols, selected_rows = [], []
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            selected_cols = [cb.text() for cb in col_checks if cb.isChecked()]
+            selected_rows = [cb.text() for cb in row_checks if cb.isChecked()]
+        return selected_cols, selected_rows
+
+    # Plotting methods (delegated from MainWindow)
+    def plot_histogram(self):
+        table = self.w.table
+        col_labels = [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())]
+        row_labels = [table.verticalHeaderItem(i).text() if table.verticalHeaderItem(i) else str(i+1) for i in range(table.rowCount())]
+        cols, rows = self.choose_columns_and_rows(col_labels, row_labels, "Select Columns and Rows for Histogram")
+        if not cols and not rows:
+            QMessageBox.warning(self.w, "Selection Required", "Please select at least one column or one row for histogram.")
+            return
+        row_map = {label: idx for idx, label in enumerate(row_labels)}
+        selected_row_indices = ([row_map[r] for r in rows] if rows else list(range(table.rowCount())))
+        numeric_data_dict = {}
+        text_data_dict = {}
+        for col in cols:
+            idx = col_labels.index(col)
+            nums, texts = [], []
+            for r in selected_row_indices:
+                item = table.item(r, idx)
+                if item:
+                    txt = item.text().strip()
+                    try:
+                        nums.append(float(txt))
+                    except ValueError:
+                        if txt:
+                            texts.append(txt)
+            if nums and texts:
+                QMessageBox.warning(self.w, "Mixed Data Types", f"Column '{col}' contains both numeric and text values.")
+                return
+            if nums:
+                numeric_data_dict[col] = nums
+            elif texts:
+                text_data_dict[col] = texts
+        for row_label in rows:
+            r = row_map[row_label]
+            nums, texts = [], []
+            for c in range(table.columnCount()):
+                item = table.item(r, c)
+                if item:
+                    txt = item.text().strip()
+                    try:
+                        nums.append(float(txt))
+                    except ValueError:
+                        if txt:
+                            texts.append(txt)
+            if nums and texts:
+                QMessageBox.warning(self.w, "Mixed Data Types", f"Row '{row_label}' contains both numeric and text values.")
+                return
+            if nums:
+                numeric_data_dict[row_label] = nums
+            elif texts:
+                text_data_dict[row_label] = texts
+        if not numeric_data_dict:
+            QMessageBox.warning(self.w, "No Numeric Data", "Please select at least one column or row with numeric values.")
+            return
+        keys = list(numeric_data_dict.keys())
+        if len(keys) == 1:
+            k = keys[0]
+            plots.plot_histogram(k, numeric_data_dict[k], [])
+        else:
+            plots.plot_histogram(keys, numeric_data_dict, {})
+
+    def plot_box_plot(self):
+        table = self.w.table
+        col_labels = [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())]
+        row_labels = [table.verticalHeaderItem(i).text() if table.verticalHeaderItem(i) else str(i+1) for i in range(table.rowCount())]
+        cols, rows = self.choose_columns_and_rows(col_labels, row_labels, "Select one or more columns or rows for Box Plot")
+        if not cols and not rows:
+            QMessageBox.warning(self.w, "Selection Required", "Please select at least one column or one row for box plot.")
+            return
+        row_map = {label: idx for idx, label in enumerate(row_labels)}
+        numeric_data = {}
+        for col in cols:
+            idx = col_labels.index(col)
+            vals = []
+            for r in range(table.rowCount()):
+                item = table.item(r, idx)
+                if item and self._is_float(item.text().strip()):
+                    vals.append(float(item.text().strip()))
+            if vals:
+                numeric_data[col] = vals
+        for row_label in rows:
+            ridx = row_map[row_label]
+            vals = []
+            for c in range(table.columnCount()):
+                item = table.item(ridx, c)
+                if item and self._is_float(item.text().strip()):
+                    vals.append(float(item.text().strip()))
+            if vals:
+                numeric_data[row_label] = vals
+        if not numeric_data:
+            QMessageBox.warning(self.w, "No Data", "None of the selected columns or rows contained numeric data.")
+            return
+        if len(numeric_data) > 1:
+            plots.plot_box_plots(list(numeric_data.keys()), numeric_data)
+            return
+        label, data = next(iter(numeric_data.items()))
+        if label in cols:
+            grouping_cols, _ = self.choose_columns_and_rows(col_labels, [], "Select zero or more columns to group by")
+            grouping_cols = [c for c in grouping_cols if c != label]
+            if not grouping_cols:
+                plots.plot_box_plot(label, data)
+                return
+            grouped = {}
+            for r in range(table.rowCount()):
+                try:
+                    key = " | ".join(table.item(r, col_labels.index(gc)).text().strip() for gc in grouping_cols)
+                    val = float(table.item(r, col_labels.index(label)).text().strip())
+                    grouped.setdefault(key, []).append(val)
+                except:
+                    continue
+            if not grouped:
+                QMessageBox.warning(self.w, "No Data", "No valid grouped data found for box plot.")
+                return
+            plots.plot_grouped_box_plot(label, ", ".join(grouping_cols), grouped)
+        else:
+            _, grouping_rows = self.choose_columns_and_rows([], row_labels, "Select zero or more rows to group by")
+            grouping_rows = [r for r in grouping_rows if r != label]
+            if not grouping_rows:
+                plots.plot_box_plot(label, data)
+                return
+            primary_idx = row_map[label]
+            grouped = {}
+            for c in range(table.columnCount()):
+                try:
+                    key = " | ".join(table.item(row_map[grp], c).text().strip() for grp in grouping_rows)
+                    val = float(table.item(primary_idx, c).text().strip())
+                    grouped.setdefault(key, []).append(val)
+                except:
+                    continue
+            if not grouped:
+                QMessageBox.warning(self.w, "No Data", "No valid grouped data found for box plot.")
+                return
+            plots.plot_grouped_box_plot(label, ", ".join(grouping_rows), grouped)
+
+    def plot_scatter(self):
+        table = self.w.table
+        col_labels = [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())]
+        row_labels = [table.verticalHeaderItem(i).text() if table.verticalHeaderItem(i) else str(i+1) for i in range(table.rowCount())]
+        kind, ok = QInputDialog.getItem(self.w, "Scatter Type", "Choose scatter dimension:", ["1D", "2D"], 0, False)
+        if not ok:
+            return
+        if kind == "1D":
+            cols, rows = self.choose_columns_and_rows(col_labels, row_labels, "Select one or more columns or rows for 1D scatter")
+            if not cols and not rows:
+                QMessageBox.warning(self.w, "Selection Required", "Please select at least one column or row.")
+                return
+            data_dict = {}
+            for col in cols:
+                idx = col_labels.index(col)
+                vals = [float(table.item(r, idx).text()) for r in range(table.rowCount()) if table.item(r, idx) and self._is_float(table.item(r, idx).text())]
+                if vals:
+                    data_dict[col] = vals
+            for row in rows:
+                ridx = row_labels.index(row)
+                vals = [float(table.item(ridx, c).text()) for c in range(table.columnCount()) if table.item(ridx, c) and self._is_float(table.item(ridx, c).text())]
+                if vals:
+                    data_dict[row] = vals
+            if not data_dict:
+                QMessageBox.warning(self.w, "No Data", "None of the selected columns or rows contained numeric data.")
+                return
+            plots.plot_scatter_1d(data_dict)
+            return
+        count, ok = QInputDialog.getInt(self.w, "2D Scatter Pairs", "How many X–Y pairs would you like?", 1, 1, 10, 1)
+        if not ok:
+            return
+        pairs = []
+        for i in range(count):
+            x_cols, x_rows = self.choose_columns_and_rows(col_labels, row_labels, f"Pair {i+1}: select exactly one column or row for X axis")
+            if len(x_cols) + len(x_rows) != 1:
+                QMessageBox.warning(self.w, "Select X Variable", "Please select exactly one column or row.")
+                return
+            if x_cols:
+                x_label = x_cols[0]
+                x_idx = col_labels.index(x_label)
+                x_data = [float(table.item(r, x_idx).text()) for r in range(table.rowCount()) if table.item(r, x_idx) and self._is_float(table.item(r, x_idx).text())]
+            else:
+                x_label = x_rows[0]
+                ridx = row_labels.index(x_label)
+                x_data = [float(table.item(ridx, c).text()) for c in range(table.columnCount()) if table.item(ridx, c) and self._is_float(table.item(ridx, c).text())]
+            y_cols, y_rows = self.choose_columns_and_rows(col_labels, row_labels, f"Pair {i+1}: select exactly one column or row for Y axis")
+            if len(y_cols) + len(y_rows) != 1:
+                QMessageBox.warning(self.w, "Select Y Variable", "Please select exactly one column or row.")
+                return
+            if y_cols:
+                y_label = y_cols[0]
+                y_idx = col_labels.index(y_label)
+                y_data = [float(table.item(r, y_idx).text()) for r in range(table.rowCount()) if table.item(r, y_idx) and self._is_float(table.item(r, y_idx).text())]
+            else:
+                y_label = y_rows[0]
+                ridx = row_labels.index(y_label)
+                y_data = [float(table.item(ridx, c).text()) for c in range(table.columnCount()) if table.item(ridx, c) and self._is_float(table.item(ridx, c).text())]
+            if not x_data or not y_data:
+                QMessageBox.warning(self.w, "No Data", f"Pair {i+1}: could not extract numeric data.")
+                return
+            n = min(len(x_data), len(y_data))
+            pairs.append((x_label, y_label, x_data[:n], y_data[:n]))
+        if count == 1:
+            x_label, y_label, x_vals, y_vals = pairs[0]
+            plots.plot_scatter(x_label, y_label, x_vals, y_vals)
+        else:
+            plots.plot_scatter_overlaid(pairs)
+
+    def plot_pie_chart(self):
+        table = self.w.table
+        col_labels = [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())]
+        row_labels = [table.verticalHeaderItem(i).text() if table.verticalHeaderItem(i) else str(i+1) for i in range(table.rowCount())]
+        cols, rows = self.choose_columns_and_rows(col_labels, row_labels, "Select columns and/or rows for pie charts")
+        if not cols and not rows:
+            QMessageBox.warning(self.w, "Selection Required", "Please select at least one column or one row.")
+            return
+        pies = []
+        for col in cols:
+            idx = col_labels.index(col)
+            counts = {}
+            for r in range(table.rowCount()):
+                item = table.item(r, idx)
+                if item:
+                    txt = item.text().strip()
+                    if txt:
+                        counts[txt] = counts.get(txt, 0) + 1
+            if counts:
+                pies.append((col, counts))
+        for row in rows:
+            ridx = row_labels.index(row)
+            counts = {}
+            for c in range(table.columnCount()):
+                item = table.item(ridx, c)
+                if item:
+                    txt = item.text().strip()
+                    if txt:
+                        counts[txt] = counts.get(txt, 0) + 1
+            if counts:
+                pies.append((row, counts))
+        if not pies:
+            QMessageBox.warning(self.w, "No Data", "None of the selected columns or rows contained any data.")
+            return
+        if len(pies) == 1:
+            label, counts = pies[0]
+            plots.plot_pie_chart(label, counts)
+        else:
+            plots.plot_pie_charts(pies)
+
+    def plot_bar_chart(self):
+        table = self.w.table
+        col_labels = [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())]
+        row_labels = [(table.verticalHeaderItem(i).text() if table.verticalHeaderItem(i) else str(i+1)) for i in range(table.rowCount())]
+        cols, rows = self.choose_columns_and_rows(col_labels, row_labels, "Select one or more numeric columns or rows for the bar chart")
+        total = len(cols) + len(rows)
+        if total < 1:
+            QMessageBox.warning(self.w, "Need Variables", "Please select at least one column or one row.")
+            return
+        if cols and rows:
+            labels, means = [], []
+            for col in cols:
+                idx = col_labels.index(col)
+                vals = [float(table.item(r, idx).text()) for r in range(table.rowCount()) if table.item(r, idx) and self._is_float(table.item(r, idx).text())]
+                if not vals:
+                    QMessageBox.warning(self.w, "Non-Numeric Data", f"Column '{col}' has no numeric data.")
+                    return
+                labels.append(col)
+                means.append(sum(vals)/len(vals))
+            for row_label in rows:
+                ridx = row_labels.index(row_label)
+                vals = [float(table.item(ridx, c).text()) for c in range(table.columnCount()) if table.item(ridx, c) and self._is_float(table.item(ridx, c).text())]
+                if not vals:
+                    QMessageBox.warning(self.w, "Non-Numeric Data", f"Row '{row_label}' has no numeric data.")
+                    return
+                labels.append(row_label)
+                means.append(sum(vals)/len(vals))
+            plots.plot_bar_chart(labels, means)
+            return
+        if cols:
+            numeric_cols = cols
+            grouping_cols, _ = self.choose_columns_and_rows(col_labels, [], "Select zero or more columns to group by")
+            if not grouping_cols:
+                labels, means = [], []
+                for col in numeric_cols:
+                    idx = col_labels.index(col)
+                    vals = [float(table.item(r, idx).text()) for r in range(table.rowCount()) if table.item(r, idx) and self._is_float(table.item(r, idx).text())]
+                    if not vals:
+                        QMessageBox.warning(self.w, "Non-Numeric Data", f"Column '{col}' has no numeric data.")
+                        return
+                    labels.append(col)
+                    means.append(sum(vals)/len(vals))
+                plots.plot_bar_chart(labels, means)
+                return
+            grouped = {}
+            group_keys = []
+            for r in range(table.rowCount()):
+                parts = []
+                for g in grouping_cols:
+                    cidx = col_labels.index(g)
+                    itm = table.item(r, cidx)
+                    parts.append(itm.text().strip() if itm and itm.text().strip() else "")
+                if not all(parts):
+                    continue
+                key = " | ".join(parts)
+                if key not in grouped:
+                    grouped[key] = [[] for _ in numeric_cols]
+                    group_keys.append(key)
+                for i, col in enumerate(numeric_cols):
+                    cidx = col_labels.index(col)
+                    itm = table.item(r, cidx)
+                    if itm and itm.text().strip() and self._is_float(itm.text()):
+                        grouped[key][i].append(float(itm.text()))
+            labels = numeric_cols
+            means_dict = {}
+            for key in group_keys:
+                lists = grouped[key]
+                for lst in lists:
+                    if not lst:
+                        QMessageBox.warning(self.w, "Incomplete Data", f"No numeric data for group '{key}'.")
+                        return
+                means_dict[key] = [sum(lst)/len(lst) for lst in lists]
+            plots.plot_grouped_bar_chart(labels, group_keys, means_dict, grouping_vars=grouping_cols)
+            return
+        if rows:
+            numeric_rows = rows
+            _, grouping_rows = self.choose_columns_and_rows([], row_labels, "Select zero or more rows to group by")
+            if not grouping_rows:
+                labels, means = [], []
+                for row_label in numeric_rows:
+                    ridx = row_labels.index(row_label)
+                    vals = [float(table.item(ridx, c).text()) for c in range(table.columnCount()) if table.item(ridx, c) and self._is_float(table.item(ridx, c).text())]
+                    if not vals:
+                        QMessageBox.warning(self.w, "Non-Numeric Data", f"Row '{row_label}' has no numeric data.")
+                        return
+                    labels.append(row_label)
+                    means.append(sum(vals)/len(vals))
+                plots.plot_bar_chart(labels, means)
+                return
+            grouped = {}
+            group_keys = []
+            for c in range(table.columnCount()):
+                parts = []
+                for g in grouping_rows:
+                    ridx = row_labels.index(g)
+                    itm = table.item(ridx, c)
+                    parts.append(itm.text().strip() if itm and itm.text().strip() else "")
+                if not all(parts):
+                    continue
+                key = " | ".join(parts)
+                if key not in grouped:
+                    grouped[key] = [[] for _ in numeric_rows]
+                    group_keys.append(key)
+                for i, row_label in enumerate(numeric_rows):
+                    ridx = row_labels.index(row_label)
+                    itm = table.item(ridx, c)
+                    if itm and itm.text().strip() and self._is_float(itm.text()):
+                        grouped[key][i].append(float(itm.text()))
+            labels = numeric_rows
+            means_dict = {}
+            for key in group_keys:
+                lists = grouped[key]
+                for lst in lists:
+                    if not lst:
+                        QMessageBox.warning(self.w, "Incomplete Data", f"No numeric data for group '{key}'.")
+                        return
+                means_dict[key] = [sum(lst)/len(lst) for lst in lists]
+            plots.plot_grouped_bar_chart(labels, group_keys, means_dict, grouping_vars=grouping_rows)
+            return
+
+    def plot_scatter_matrix(self):
+        table = self.w.table
+        col_labels = [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())]
+        row_labels = [(table.verticalHeaderItem(i).text() if table.verticalHeaderItem(i) else str(i+1)) for i in range(table.rowCount())]
+        cols, rows = self.choose_columns_and_rows(col_labels, row_labels, "Select one or more numeric columns and/or rows for Scatter Matrix")
+        if not cols and not rows:
+            QMessageBox.warning(self.w, "Selection Required", "Please select at least one column or one row.")
+            return
+        numeric_data = {}
+        for col in cols:
+            idx = col_labels.index(col)
+            vals = []
+            for r in range(table.rowCount()):
+                txt = table.item(r, idx).text().strip()
+                if self._is_float(txt):
+                    vals.append(float(txt))
+            if vals:
+                numeric_data[col] = vals
+        row_map = {lbl: i for i, lbl in enumerate(row_labels)}
+        for row_lbl in rows:
+            ridx = row_map[row_lbl]
+            vals = []
+            for c in range(table.columnCount()):
+                txt = table.item(ridx, c).text().strip()
+                if self._is_float(txt):
+                    vals.append(float(txt))
+            if vals:
+                numeric_data[row_lbl] = vals
+        if len(numeric_data) < 2:
+            QMessageBox.warning(self.w, "Insufficient Variables", "Need at least two numeric series for a scatter-matrix.")
+            return
+        min_len = min(len(v) for v in numeric_data.values())
+        for lbl in numeric_data:
+            numeric_data[lbl] = numeric_data[lbl][:min_len]
+        plots.plot_scatter_matrix(list(numeric_data.keys()), numeric_data)
+
+    def plot_survival(self):
+        table = self.w.table
+        cols = [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())]
+        dlg = QDialog(self.w)
+        dlg.setWindowTitle("Survival Plot Options")
+        layout = QFormLayout(dlg)
+        group_cb = QComboBox(dlg)
+        group_cb.addItem("<None>")
+        group_cb.addItems(cols)
+        layout.addRow("Group (optional):", group_cb)
+        time_cb = QComboBox(dlg)
+        time_cb.addItems(cols)
+        layout.addRow("Time column:", time_cb)
+        event_cb = QComboBox(dlg)
+        event_cb.addItems(cols)
+        layout.addRow("Event column (0=censor,1=event):", event_cb)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=dlg)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addRow(buttons)
+        dlg.setLayout(layout)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        group_col = group_cb.currentText()
+        if group_col == "<None>":
+            group_col = None
+        time_col = time_cb.currentText()
+        event_col = event_cb.currentText()
+        data = []
+        for r in range(table.rowCount()):
+            row = [table.item(r, c).text() if table.item(r, c) else "" for c in range(table.columnCount())]
+            data.append(row)
+        df = pd.DataFrame(data, columns=cols)
+        try:
+            df[time_col] = pd.to_numeric(df[time_col], errors="raise")
+            raw = df[event_col]
+            if raw.dtype == object or pd.api.types.is_string_dtype(raw):
+                df[event_col] = (raw.astype(str).str.strip().str.lower().map({"true": True, "false": False, "1": True, "0": False}).fillna(False))
+            else:
+                df[event_col] = pd.to_numeric(raw, errors="raise").astype(bool)
+        except Exception as e:
+            QMessageBox.critical(self.w, "Conversion Error", f"Error converting columns: {e}")
+            return
+        plots.plot_kaplan_meier(df, time_col, event_col, group_col)
+
+    def run_kmeans(self):
+        table = self.w.table
+        cols = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+        dlg = QDialog(self.w)
+        dlg.setWindowTitle("Select Axes")
+        form = QFormLayout(dlg)
+        cb_x = QComboBox(dlg); cb_x.addItems(cols)
+        cb_y = QComboBox(dlg); cb_y.addItems(cols)
+        form.addRow("X axis:", cb_x)
+        form.addRow("Y axis:", cb_y)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=dlg)
+        buttons.accepted.connect(dlg.accept); buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons); dlg.setLayout(form)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        x_col, y_col = cb_x.currentText(), cb_y.currentText()
+        if x_col == y_col:
+            QMessageBox.warning(self.w, "Invalid selection", "Please pick two diff columns.")
+            return
+        max_k, ok = QInputDialog.getInt(self.w, "Max Clusters", "Compute inertia up to K =", value=10, min=1, max=100, step=1)
+        if not ok:
+            return
+        data = []
+        for r in range(table.rowCount()):
+            row = [table.item(r, c).text() if table.item(r, c) else "" for c in range(table.columnCount())]
+            data.append(row)
+        df = pd.DataFrame(data, columns=cols)
+        plots.plot_kmeans_elbow(df, x_col, y_col, max_k)
+        while _plt.get_fignums():
+            _plt.pause(0.1)
+        k, ok = QInputDialog.getInt(self.w, "Choose K", "How many clusters?", value=3, min=1, max=max_k, step=1)
+        if not ok:
+            return
+        plots.plot_kmeans_scatter(df, x_col, y_col, k)
+
+    def run_linear_regression(self):
+        table = self.w.table
+        cols = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+        dlg = QDialog(self.w)
+        dlg.setWindowTitle("Linear Regression: Select Axes")
+        form = QFormLayout(dlg)
+        cb_x = QComboBox(dlg); cb_x.addItems(cols)
+        cb_y = QComboBox(dlg); cb_y.addItems(cols)
+        form.addRow("X:", cb_x); form.addRow("Y:", cb_y)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=dlg)
+        buttons.accepted.connect(dlg.accept); buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons); dlg.setLayout(form)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        x_col = cb_x.currentText(); y_col = cb_y.currentText()
+        if x_col == y_col:
+            QMessageBox.warning(self.w, "Invalid selection", "Please pick two different columns.")
+            return
+        data = []
+        for r in range(table.rowCount()):
+            row = [table.item(r, c).text() if table.item(r, c) else "" for c in range(table.columnCount())]
+            data.append(row)
+        df = pd.DataFrame(data, columns=cols)
+        plots.plot_linear_regression(df, x_col, y_col)
+
+    def plot_line_graph(self):
+        table = self.w.table
+        row_labels = [(table.verticalHeaderItem(i).text() if table.verticalHeaderItem(i) else str(i+1)) for i in range(table.rowCount())]
+        dlg = QDialog(self.w)
+        dlg.setWindowTitle("Select rows for Line graph"); dlg.resize(300, 300)
+        main_layout = QVBoxLayout(dlg)
+        scroll = QScrollArea(dlg); scroll.setWidgetResizable(True)
+        container = QWidget(); cb_layout = QVBoxLayout(container); cb_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        checkboxes = []
+        for lbl in row_labels:
+            cb = QCheckBox(lbl, container); cb_layout.addWidget(cb); checkboxes.append(cb)
+        container.setLayout(cb_layout); scroll.setWidget(container); main_layout.addWidget(scroll)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=dlg)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject); main_layout.addWidget(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = [cb.text() for cb in checkboxes if cb.isChecked()]
+        if not selected:
+            QMessageBox.warning(self.w, "Selection Required", "Please select at least one row for the line graph.")
+            return
+        numeric_data = {}
+        for lbl in selected:
+            ridx = row_labels.index(lbl)
+            vals = []
+            for c in range(table.columnCount()):
+                item = table.item(ridx, c)
+                txt = item.text().strip() if item else ""
+                if self._is_float(txt):
+                    vals.append(float(txt))
+            if vals:
+                numeric_data[lbl] = vals
+        if not numeric_data:
+            QMessageBox.warning(self.w, "No Numeric Data", "None of the selected rows contain numeric values.")
+            return
+        plots.plot_line_graph(list(numeric_data.keys()), numeric_data)
+
+    def run_anova(self):
+        table = self.w.table
+        row_labels = [str(table.model().headerData(r, Qt.Orientation.Vertical)) for r in range(table.rowCount())]
+        mode, ok = QInputDialog.getItem(self.w, "ANOVA Mode", "Compute one-way ANOVA on", ["Rows", "Column grouped by row prefix"], 0, False)
+        if not ok:
+            return
+        groups = {}
+        if mode.startswith("Rows"):
+            dlg = QDialog(self.w)
+            dlg.setWindowTitle("Select Rows"); dlg_layout = QVBoxLayout(dlg)
+            scroll = QScrollArea(dlg); scroll.setWidgetResizable(True); scroll.setMaximumHeight(300); dlg_layout.addWidget(scroll)
+            container = QWidget(); scroll.setWidget(container); container_layout = QVBoxLayout(container)
+            checkboxes = []
+            for lbl in row_labels:
+                cb = QCheckBox(lbl, container); container_layout.addWidget(cb); checkboxes.append(cb)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dlg)
+            buttons.accepted.connect(dlg.accept); buttons.rejected.connect(dlg.reject); dlg_layout.addWidget(buttons)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            selected = [cb.text() for cb in checkboxes if cb.isChecked()]
+            if len(selected) < 2:
+                QMessageBox.warning(self.w, "Need Multiple Rows", "Please check at least two rows.")
+                return
+            for lbl in selected:
+                r = row_labels.index(lbl)
+                vals = []
+                for c in range(table.columnCount()):
+                    item = table.item(r, c)
+                    txt = item.text().strip() if item else ""
+                    if self._is_float(txt):
+                        vals.append(float(txt))
+                if vals:
+                    groups[lbl] = vals
+        else:
+            col_labels = [str(table.model().headerData(c, Qt.Orientation.Horizontal)) for c in range(table.columnCount())]
+            col_name, ok = QInputDialog.getItem(self.w, "Select Column", "Choose the measurement column:", col_labels, 0, False)
+            if not ok:
+                return
+            col_idx = col_labels.index(col_name)
+            for r in range(table.rowCount()):
+                header = row_labels[r]
+                item = table.item(r, col_idx)
+                txt = item.text().strip() if item else ""
+                if not self._is_float(txt):
+                    continue
+                m = re.match(r"^(\D+)", header)
+                prefix = m.group(1) if m else header
+                groups.setdefault(prefix, []).append(float(txt))
+        groups = {k: v for k, v in groups.items() if v}
+        if len(groups) < 2:
+            QMessageBox.warning(self.w, "Not Enough Data", "Need at least two groups with numeric data.")
+            return
+        plots.perform_anova(groups)
+
+    def run_logistic(self):
+        table = self.w.table
+        cols = [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())]
+        dlg = QDialog(self.w); dlg.setWindowTitle("Logistic Regression: Select Columns"); layout = QFormLayout(dlg)
+        cb_x = QComboBox(dlg); cb_x.addItems(cols)
+        cb_y = QComboBox(dlg); cb_y.addItems(cols)
+        layout.addRow("Feature (X):", cb_x); layout.addRow("Binary Label (Y):", cb_y)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=dlg)
+        buttons.accepted.connect(dlg.accept); buttons.rejected.connect(dlg.reject); layout.addRow(buttons)
+        dlg.setLayout(layout)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        x_col = cb_x.currentText(); y_col = cb_y.currentText()
+        if x_col == y_col:
+            QMessageBox.warning(self.w, "Invalid Selection", "X and Y must be different columns.")
+            return
+        data = []
+        for r in range(table.rowCount()):
+            row_data = [table.item(r, c).text() if table.item(r, c) else "" for c in range(table.columnCount())]
+            data.append(row_data)
+        df = pd.DataFrame(data, columns=cols)
+        df[x_col] = pd.to_numeric(df[x_col], errors='coerce')
+        df[y_col] = pd.to_numeric(df[y_col], errors='coerce')
+        df_clean = df.dropna(subset=[x_col, y_col])
+        df_clean = df_clean[df_clean[y_col].isin([0, 1])]
+        if df_clean.empty:
+            QMessageBox.warning(self.w, "Invalid Data", "No valid numeric feature values or binary labels (0/1) found.")
+            return
+        plots.plot_logistic_regression(df_clean, x_col, y_col)
+
+    def run_exp_regression(self):
+        table = self.w.table
+        cols = [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())]
+        dlg = QDialog(self.w); dlg.setWindowTitle("Exponential Regression: Select Axes"); form = QFormLayout(dlg)
+        cb_x = QComboBox(dlg); cb_x.addItems(cols)
+        cb_y = QComboBox(dlg); cb_y.addItems(cols)
+        form.addRow("X:", cb_x); form.addRow("Y:", cb_y)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=dlg)
+        buttons.accepted.connect(dlg.accept); buttons.rejected.connect(dlg.reject); form.addRow(buttons)
+        dlg.setLayout(form)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        x_col = cb_x.currentText(); y_col = cb_y.currentText()
+        if x_col == y_col:
+            QMessageBox.warning(self.w, "Invalid selection", "Please pick two different columns.")
+            return
+        data = []
+        for r in range(table.rowCount()):
+            row = [table.item(r, c).text() if table.item(r, c) else "" for c in range(table.columnCount())]
+            data.append(row)
+        df = pd.DataFrame(data, columns=cols)
+        try:
+            df[x_col] = pd.to_numeric(df[x_col], errors="raise")
+            df[y_col] = pd.to_numeric(df[y_col], errors="raise")
+        except Exception as e:
+            QMessageBox.critical(self.w, "Conversion Error", f"Error converting columns: {e}")
+            return
+        plots.plot_exponential_reg(df, x_col, y_col)
